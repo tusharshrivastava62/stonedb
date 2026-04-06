@@ -3,6 +3,7 @@ import glob
 from stonedb.wal import WAL
 from stonedb.memtable import Memtable
 from stonedb.sstable import SSTableWriter, SSTableReader
+from stonedb.bloom import BloomFilter
 
 
 class DB:
@@ -14,28 +15,39 @@ class DB:
 
         self._wal = WAL(os.path.join(path, "wal.log"))
         self._memtable = Memtable(flush_threshold=memtable_threshold)
-        self._sstables = []  # newest first
+        self._sstables = []  # (SSTableReader, BloomFilter) pairs, newest first
+        self._bloom_checks_skipped = 0  # for benchmarking
 
         self._sst_counter = 0
         self._recover()
 
     def _recover(self):
         """Rebuild state from WAL and existing SSTables on startup."""
-        # load existing sstables, sorted by creation order
         sst_files = sorted(glob.glob(os.path.join(self.path, "*.sst")))
         for f in sst_files:
-            self._sstables.append(SSTableReader(f))
+            reader = SSTableReader(f)
+            bloom = self._load_bloom(f)
+            self._sstables.append((reader, bloom))
+
             num = int(os.path.basename(f).split(".")[0])
             if num >= self._sst_counter:
                 self._sst_counter = num + 1
 
-        # newest should be first for read path
+        # newest first for read path
         self._sstables.reverse()
 
         # replay WAL into memtable
-        entries = WAL.recover(os.path.join(self.path, "wal.log"))
+        wal_path = os.path.join(self.path, "wal.log")
+        entries = WAL.recover(wal_path)
         for key, value in entries:
             self._memtable.put(key, value)
+
+    def _load_bloom(self, sst_path):
+        bloom_path = sst_path.replace(".sst", ".bloom")
+        if not os.path.exists(bloom_path):
+            return None
+        with open(bloom_path, "rb") as f:
+            return BloomFilter.deserialize(f.read())
 
     def put(self, key, value):
         self._wal.append(key, value)
@@ -51,8 +63,13 @@ class DB:
             return val
 
         # search sstables newest to oldest
-        for sst in self._sstables:
-            val = sst.get(key)
+        for reader, bloom in self._sstables:
+            # bloom filter says 'definitely not here' — skip this sstable
+            if bloom is not None and not bloom.might_contain(key):
+                self._bloom_checks_skipped += 1
+                continue
+
+            val = reader.get(key)
             if val is not None:
                 return val
 
@@ -62,20 +79,28 @@ class DB:
         if len(self._memtable) == 0:
             return
 
-        # write memtable to new sstable
+        items = self._memtable.items()
+
+        # write sstable
         sst_path = os.path.join(self.path, f"{self._sst_counter:06d}.sst")
-        SSTableWriter.write(sst_path, self._memtable.items())
+        SSTableWriter.write(sst_path, items)
+
+        # build and save bloom filter
+        bloom = BloomFilter(len(items))
+        for k, _ in items:
+            bloom.add(k)
+        bloom_path = sst_path.replace(".sst", ".bloom")
+        with open(bloom_path, "wb") as f:
+            f.write(bloom.serialize())
 
         reader = SSTableReader(sst_path)
-        self._sstables.insert(0, reader)  # newest first
+        self._sstables.insert(0, (reader, bloom))
         self._sst_counter += 1
 
-        # clear memtable and WAL
         self._memtable.clear()
         self._wal.truncate()
 
     def close(self):
-        # flush any remaining data in memtable
         if len(self._memtable) > 0:
             self._flush()
         self._wal.close()
