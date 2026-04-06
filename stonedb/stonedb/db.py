@@ -42,6 +42,10 @@ class DB:
         for key, value in entries:
             self._memtable.put(key, value)
 
+        # flush if WAL had enough entries to exceed threshold
+        if self._memtable.should_flush():
+            self._flush()
+
     def _load_bloom(self, sst_path):
         bloom_path = sst_path.replace(".sst", ".bloom")
         if not os.path.exists(bloom_path):
