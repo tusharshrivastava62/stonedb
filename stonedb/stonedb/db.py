@@ -6,6 +6,11 @@ from stonedb.sstable import SSTableWriter, SSTableReader
 from stonedb.bloom import BloomFilter
 
 
+# tombstone marker for deleted keys — deliberately ugly so it can't
+# collide with a real value
+TOMBSTONE = "__STONEDB_TOMBSTONE__"
+
+
 class DB:
     """LSM-Tree key-value storage engine."""
 
@@ -16,7 +21,7 @@ class DB:
         self._wal = WAL(os.path.join(path, "wal.log"))
         self._memtable = Memtable(flush_threshold=memtable_threshold)
         self._sstables = []  # (SSTableReader, BloomFilter) pairs, newest first
-        self._bloom_checks_skipped = 0  # for benchmarking
+        self._bloom_checks_skipped = 0
 
         self._sst_counter = 0
         self._recover()
@@ -33,16 +38,13 @@ class DB:
             if num >= self._sst_counter:
                 self._sst_counter = num + 1
 
-        # newest first for read path
         self._sstables.reverse()
 
-        # replay WAL into memtable
         wal_path = os.path.join(self.path, "wal.log")
         entries = WAL.recover(wal_path)
         for key, value in entries:
             self._memtable.put(key, value)
 
-        # flush if WAL had enough entries to exceed threshold
         if self._memtable.should_flush():
             self._flush()
 
@@ -61,23 +63,29 @@ class DB:
             self._flush()
 
     def get(self, key):
-        # check memtable first — most recent writes live here
+        # check memtable first
         val = self._memtable.get(key)
         if val is not None:
+            if val == TOMBSTONE:
+                return None
             return val
 
-        # search sstables newest to oldest
         for reader, bloom in self._sstables:
-            # bloom filter says 'definitely not here' — skip this sstable
             if bloom is not None and not bloom.might_contain(key):
                 self._bloom_checks_skipped += 1
                 continue
 
             val = reader.get(key)
             if val is not None:
+                if val == TOMBSTONE:
+                    return None
                 return val
 
         return None
+
+    def delete(self, key):
+        """Delete a key by writing a tombstone marker."""
+        self.put(key, TOMBSTONE)
 
     def _flush(self):
         if len(self._memtable) == 0:
@@ -85,11 +93,9 @@ class DB:
 
         items = self._memtable.items()
 
-        # write sstable
         sst_path = os.path.join(self.path, f"{self._sst_counter:06d}.sst")
         SSTableWriter.write(sst_path, items)
 
-        # build and save bloom filter
         bloom = BloomFilter(len(items))
         for k, _ in items:
             bloom.add(k)
