@@ -92,20 +92,20 @@ class DB:
             num_tables = len(self._sstables)
         num_tables = min(num_tables, len(self._sstables))
 
-        # take the oldest N sstables (they're at the end since list is newest-first)
         to_compact = self._sstables[-num_tables:]
         remaining = self._sstables[:-num_tables]
 
-        sst_paths = [reader.path for reader, _ in to_compact]
+        safe_to_drop = len(remaining) == 0 and len(self._memtable) == 0
 
+        # paths must be oldest-first so newer values overwrite older in merge
+        sst_paths = [reader.path for reader, _ in reversed(to_compact)]
         output_path = os.path.join(self.path, f"{self._sst_counter:06d}.sst")
-        compact(sst_paths, output_path)
+        compact(sst_paths, output_path, drop_tombstones=safe_to_drop)
 
         new_reader = SSTableReader(output_path)
         new_bloom = self._load_bloom(output_path)
         self._sst_counter += 1
 
-        # rebuild sstable list: remaining (newest first) + new compacted at end
         self._sstables = remaining + [(new_reader, new_bloom)]
 
     def _flush(self):
