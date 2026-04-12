@@ -4,10 +4,9 @@ from stonedb.wal import WAL
 from stonedb.memtable import Memtable
 from stonedb.sstable import SSTableWriter, SSTableReader
 from stonedb.bloom import BloomFilter
+from stonedb.compaction import compact
 
 
-# tombstone marker for deleted keys — deliberately ugly so it can't
-# collide with a real value
 TOMBSTONE = "__STONEDB_TOMBSTONE__"
 
 
@@ -27,7 +26,6 @@ class DB:
         self._recover()
 
     def _recover(self):
-        """Rebuild state from WAL and existing SSTables on startup."""
         sst_files = sorted(glob.glob(os.path.join(self.path, "*.sst")))
         for f in sst_files:
             reader = SSTableReader(f)
@@ -63,7 +61,6 @@ class DB:
             self._flush()
 
     def get(self, key):
-        # check memtable first
         val = self._memtable.get(key)
         if val is not None:
             if val == TOMBSTONE:
@@ -84,8 +81,32 @@ class DB:
         return None
 
     def delete(self, key):
-        """Delete a key by writing a tombstone marker."""
         self.put(key, TOMBSTONE)
+
+    def run_compaction(self, num_tables=None):
+        """Merge oldest SSTables into one. Defaults to compacting all."""
+        if len(self._sstables) < 2:
+            return
+
+        if num_tables is None:
+            num_tables = len(self._sstables)
+        num_tables = min(num_tables, len(self._sstables))
+
+        # take the oldest N sstables (they're at the end since list is newest-first)
+        to_compact = self._sstables[-num_tables:]
+        remaining = self._sstables[:-num_tables]
+
+        sst_paths = [reader.path for reader, _ in to_compact]
+
+        output_path = os.path.join(self.path, f"{self._sst_counter:06d}.sst")
+        compact(sst_paths, output_path)
+
+        new_reader = SSTableReader(output_path)
+        new_bloom = self._load_bloom(output_path)
+        self._sst_counter += 1
+
+        # rebuild sstable list: remaining (newest first) + new compacted at end
+        self._sstables = remaining + [(new_reader, new_bloom)]
 
     def _flush(self):
         if len(self._memtable) == 0:
