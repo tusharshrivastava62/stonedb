@@ -46,7 +46,6 @@ def percentile(data, p):
 
 
 def disk_usage(path):
-    """Total bytes used by .sst and .bloom files."""
     total = 0
     for ext in ["*.sst", "*.bloom"]:
         for f in glob.glob(os.path.join(path, ext)):
@@ -134,7 +133,7 @@ def run_read_benchmarks():
     )
     missing_keys = [f"miss_{i:08d}" for i in range(READ_SAMPLE)]
 
-    # --- with bloom ---
+    # with bloom
     db = DB(db_path, memtable_threshold=32 * 1024)
     db._bloom_checks_skipped = 0
     reset_disk_reads(db)
@@ -153,7 +152,7 @@ def run_read_benchmarks():
 
     db.close()
 
-    # --- without bloom ---
+    # without bloom
     db2 = DB(db_path, memtable_threshold=32 * 1024)
     db2._sstables = [(reader, None) for reader, _ in db2._sstables]
     reset_disk_reads(db2)
@@ -179,18 +178,17 @@ def run_compaction_benchmarks():
     clean()
     db = DB(BENCH_DIR, memtable_threshold=32 * 1024)
 
-    # write 50k keys, then overwrite half — creates stale data
     value = "x" * 512
     for i in range(50000):
         db.put(f"key_{i:08d}", value)
     for i in range(0, 50000, 2):
-        db.put(f"key_{i:08d}", "y" * 512)  # overwrite even keys
+        db.put(f"key_{i:08d}", "y" * 512)
 
-    db.close()  # flush remaining
+    db.close()
 
     sst_count_before = len(glob.glob(os.path.join(BENCH_DIR, "*.sst")))
     disk_before = disk_usage(BENCH_DIR)
-    logical_size = 50000 * (8 + 512 + 16)  # rough: key + value + overhead
+    logical_size = 50000 * (8 + 512 + 16)
     amp_before = disk_before / logical_size
 
     print(f"Before compaction:")
@@ -198,7 +196,6 @@ def run_compaction_benchmarks():
     print(f"  Disk usage:         {disk_before / 1024 / 1024:.2f} MB")
     print(f"  Space amplification: {amp_before:.2f}x")
 
-    # compact
     db2 = DB(BENCH_DIR, memtable_threshold=32 * 1024)
 
     start = time.perf_counter()
@@ -222,8 +219,58 @@ def run_compaction_benchmarks():
     print()
 
 
+def run_mixed_workload():
+    print("MIXED WORKLOAD (70% read / 30% write)")
+    print("-" * 55)
+
+    clean()
+    db = DB(BENCH_DIR, memtable_threshold=64 * 1024)
+
+    # seed with 10k keys
+    value = "x" * 256
+    for i in range(10000):
+        db.put(f"key_{i:08d}", value)
+
+    ops = 50000
+    read_count = 0
+    write_count = 0
+    latencies = []
+
+    for i in range(ops):
+        if random.random() < 0.7:
+            # read
+            k = f"key_{random.randint(0, 9999):08d}"
+            start = time.perf_counter()
+            db.get(k)
+            elapsed = (time.perf_counter() - start) * 1000
+            latencies.append(elapsed)
+            read_count += 1
+        else:
+            # write
+            k = f"key_{random.randint(0, 19999):08d}"
+            start = time.perf_counter()
+            db.put(k, value)
+            elapsed = (time.perf_counter() - start) * 1000
+            latencies.append(elapsed)
+            write_count += 1
+
+    latencies.sort()
+    total_time = sum(latencies) / 1000  # back to seconds
+
+    print(f"  Operations:    {ops} ({read_count} reads, {write_count} writes)")
+    print(f"  Throughput:    {ops / total_time:,.0f} ops/sec")
+    print(f"  Latency p50:   {percentile(latencies, 50):.3f}ms")
+    print(f"  Latency p95:   {percentile(latencies, 95):.3f}ms")
+    print(f"  Latency p99:   {percentile(latencies, 99):.3f}ms")
+
+    db.close()
+    clean()
+    print()
+
+
 if __name__ == "__main__":
     print_header()
     run_write_benchmarks()
     run_read_benchmarks()
     run_compaction_benchmarks()
+    run_mixed_workload()
