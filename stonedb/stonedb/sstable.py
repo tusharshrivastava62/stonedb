@@ -42,26 +42,29 @@ class SSTableWriter:
 class SSTableReader:
     def __init__(self, path):
         self.path = path
-        self._disk_reads = 0  # track for benchmarking
+        self._disk_reads = 0
+
+    def _read_footer(self, f):
+        f.seek(-12, 2)
+        footer = f.read(12)
+        index_offset = struct.unpack(">Q", footer[:8])[0]
+        if footer[8:] != MAGIC:
+            raise ValueError(f"bad sstable magic in {self.path}")
+        return index_offset
 
     def get(self, key):
         """Look up a key by reading index from disk each time.
         More realistic than caching — in production you can't hold
         every SSTable's index in memory."""
         self._disk_reads += 1
+        target = key.encode()
 
         with open(self.path, "rb") as f:
-            # read footer
-            f.seek(-12, 2)
-            footer = f.read(12)
-            index_offset = struct.unpack(">Q", footer[:8])[0]
-            if footer[8:] != MAGIC:
-                raise ValueError(f"bad sstable magic in {self.path}")
+            index_offset = self._read_footer(f)
 
             # scan index for key
             f.seek(index_offset)
             count = struct.unpack(">I", f.read(4))[0]
-            target = key.encode()
 
             data_offset = None
             for _ in range(count):
@@ -79,25 +82,21 @@ class SSTableReader:
             f.seek(data_offset)
             header = f.read(ENTRY_HEADER_SIZE)
             klen, vlen = struct.unpack(ENTRY_HEADER, header)
-            f.read(klen)  # skip key, we already know it
+            f.read(klen)  # skip key
             val = f.read(vlen).decode()
 
         return val
 
     def keys(self):
-        """Read all keys from the index section."""
         result = set()
         with open(self.path, "rb") as f:
-            f.seek(-12, 2)
-            footer = f.read(12)
-            index_offset = struct.unpack(">Q", footer[:8])[0]
-
+            index_offset = self._read_footer(f)
             f.seek(index_offset)
             count = struct.unpack(">I", f.read(4))[0]
             for _ in range(count):
                 klen = struct.unpack(">I", f.read(4))[0]
                 key = f.read(klen).decode()
-                f.read(8)  # skip offset
+                f.read(8)
                 result.add(key)
         return result
 
@@ -105,10 +104,7 @@ class SSTableReader:
         """Read all entries in sorted order. Used during compaction."""
         entries = []
         with open(self.path, "rb") as f:
-            f.seek(-12, 2)
-            footer = f.read(12)
-            index_offset = struct.unpack(">Q", footer[:8])[0]
-
+            index_offset = self._read_footer(f)
             f.seek(index_offset)
             count = struct.unpack(">I", f.read(4))[0]
             index = []
@@ -118,7 +114,6 @@ class SSTableReader:
                 off = struct.unpack(">Q", f.read(8))[0]
                 index.append((key, off))
 
-            # read values in order
             for key, off in sorted(index, key=lambda x: x[0]):
                 f.seek(off)
                 header = f.read(ENTRY_HEADER_SIZE)
