@@ -5,8 +5,6 @@ import struct
 #   [data section] entries sorted by key, each: [klen:4][vlen:4][key][value]
 #   [index section] [num_entries:4] then per entry: [klen:4][key][offset:8]
 #   [footer] [index_offset:8][magic:4]
-#
-# reads load the index into memory, then seek to offset for key lookup
 
 ENTRY_HEADER = ">II"
 ENTRY_HEADER_SIZE = struct.calcsize(ENTRY_HEADER)
@@ -18,7 +16,7 @@ class SSTableWriter:
     def write(path, items):
         """Write sorted (key, value) pairs to an SSTable file.
         Items must already be sorted by key."""
-        index = []  # (key, offset) pairs
+        index = []
         with open(path, "wb") as f:
             for k, v in items:
                 offset = f.tell()
@@ -44,53 +42,89 @@ class SSTableWriter:
 class SSTableReader:
     def __init__(self, path):
         self.path = path
-        self._index = {}  # key -> byte offset into data section
-        self._load_index()
+        self._disk_reads = 0  # track for benchmarking
 
-    def _load_index(self):
+    def get(self, key):
+        """Look up a key by reading index from disk each time.
+        More realistic than caching — in production you can't hold
+        every SSTable's index in memory."""
+        self._disk_reads += 1
+
         with open(self.path, "rb") as f:
-            # read footer to find index offset
-            f.seek(-12, 2)  # 8 bytes offset + 4 bytes magic
+            # read footer
+            f.seek(-12, 2)
             footer = f.read(12)
             index_offset = struct.unpack(">Q", footer[:8])[0]
-            magic = footer[8:]
-            if magic != MAGIC:
+            if footer[8:] != MAGIC:
                 raise ValueError(f"bad sstable magic in {self.path}")
 
-            # read index entries
+            # scan index for key
+            f.seek(index_offset)
+            count = struct.unpack(">I", f.read(4))[0]
+            target = key.encode()
+
+            data_offset = None
+            for _ in range(count):
+                klen = struct.unpack(">I", f.read(4))[0]
+                k = f.read(klen)
+                off = struct.unpack(">Q", f.read(8))[0]
+                if k == target:
+                    data_offset = off
+                    break
+
+            if data_offset is None:
+                return None
+
+            # read value at offset
+            f.seek(data_offset)
+            header = f.read(ENTRY_HEADER_SIZE)
+            klen, vlen = struct.unpack(ENTRY_HEADER, header)
+            f.read(klen)  # skip key, we already know it
+            val = f.read(vlen).decode()
+
+        return val
+
+    def keys(self):
+        """Read all keys from the index section."""
+        result = set()
+        with open(self.path, "rb") as f:
+            f.seek(-12, 2)
+            footer = f.read(12)
+            index_offset = struct.unpack(">Q", footer[:8])[0]
+
             f.seek(index_offset)
             count = struct.unpack(">I", f.read(4))[0]
             for _ in range(count):
                 klen = struct.unpack(">I", f.read(4))[0]
                 key = f.read(klen).decode()
-                offset = struct.unpack(">Q", f.read(8))[0]
-                self._index[key] = offset
-
-    def get(self, key: str):
-        if key not in self._index:
-            return None
-
-        offset = self._index[key]
-        with open(self.path, "rb") as f:
-            f.seek(offset)
-            header = f.read(ENTRY_HEADER_SIZE)
-            klen, vlen = struct.unpack(ENTRY_HEADER, header)
-            f.read(klen)  # skip key, we already know it
-            val = f.read(vlen).decode()
-        return val
-
-    def keys(self):
-        return set(self._index.keys())
+                f.read(8)  # skip offset
+                result.add(key)
+        return result
 
     def items(self):
         """Read all entries in sorted order. Used during compaction."""
-        result = []
+        entries = []
         with open(self.path, "rb") as f:
-            for key in sorted(self._index.keys()):
-                f.seek(self._index[key])
+            f.seek(-12, 2)
+            footer = f.read(12)
+            index_offset = struct.unpack(">Q", footer[:8])[0]
+
+            f.seek(index_offset)
+            count = struct.unpack(">I", f.read(4))[0]
+            index = []
+            for _ in range(count):
+                klen = struct.unpack(">I", f.read(4))[0]
+                key = f.read(klen).decode()
+                off = struct.unpack(">Q", f.read(8))[0]
+                index.append((key, off))
+
+            # read values in order
+            for key, off in sorted(index, key=lambda x: x[0]):
+                f.seek(off)
                 header = f.read(ENTRY_HEADER_SIZE)
                 klen, vlen = struct.unpack(ENTRY_HEADER, header)
                 f.read(klen)
                 val = f.read(vlen).decode()
-                result.append((key, val))
-        return result
+                entries.append((key, val))
+
+        return entries
