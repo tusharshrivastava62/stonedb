@@ -8,6 +8,7 @@ import shutil
 import random
 import platform
 import statistics
+import glob
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from stonedb.db import DB
@@ -44,6 +45,15 @@ def percentile(data, p):
     return data[f] + (k - f) * (data[c] - data[f])
 
 
+def disk_usage(path):
+    """Total bytes used by .sst and .bloom files."""
+    total = 0
+    for ext in ["*.sst", "*.bloom"]:
+        for f in glob.glob(os.path.join(path, ext)):
+            total += os.path.getsize(f)
+    return total
+
+
 def bench_sequential_writes(value_size):
     value = "x" * value_size
     results = []
@@ -66,7 +76,6 @@ def bench_sequential_writes(value_size):
 
 
 def setup_read_db(num_keys=NUM_KEYS, value_size=1024):
-    """Create a DB with data flushed to SSTables for read benchmarks."""
     clean()
     db = DB(BENCH_DIR, memtable_threshold=32 * 1024)
     value = "x" * value_size
@@ -88,7 +97,6 @@ def bench_read_latency(db, keys):
 
 
 def count_disk_reads(db):
-    """Sum disk reads across all sstable readers."""
     total = 0
     for reader, _ in db._sstables:
         total += reader._disk_reads
@@ -126,7 +134,7 @@ def run_read_benchmarks():
     )
     missing_keys = [f"miss_{i:08d}" for i in range(READ_SAMPLE)]
 
-    # --- with bloom (normal) ---
+    # --- with bloom ---
     db = DB(db_path, memtable_threshold=32 * 1024)
     db._bloom_checks_skipped = 0
     reset_disk_reads(db)
@@ -164,7 +172,58 @@ def run_read_benchmarks():
     print()
 
 
+def run_compaction_benchmarks():
+    print("COMPACTION (space amplification)")
+    print("-" * 55)
+
+    clean()
+    db = DB(BENCH_DIR, memtable_threshold=32 * 1024)
+
+    # write 50k keys, then overwrite half — creates stale data
+    value = "x" * 512
+    for i in range(50000):
+        db.put(f"key_{i:08d}", value)
+    for i in range(0, 50000, 2):
+        db.put(f"key_{i:08d}", "y" * 512)  # overwrite even keys
+
+    db.close()  # flush remaining
+
+    sst_count_before = len(glob.glob(os.path.join(BENCH_DIR, "*.sst")))
+    disk_before = disk_usage(BENCH_DIR)
+    logical_size = 50000 * (8 + 512 + 16)  # rough: key + value + overhead
+    amp_before = disk_before / logical_size
+
+    print(f"Before compaction:")
+    print(f"  SSTables:           {sst_count_before}")
+    print(f"  Disk usage:         {disk_before / 1024 / 1024:.2f} MB")
+    print(f"  Space amplification: {amp_before:.2f}x")
+
+    # compact
+    db2 = DB(BENCH_DIR, memtable_threshold=32 * 1024)
+
+    start = time.perf_counter()
+    db2.run_compaction()
+    compact_time = time.perf_counter() - start
+
+    db2.close()
+
+    sst_count_after = len(glob.glob(os.path.join(BENCH_DIR, "*.sst")))
+    disk_after = disk_usage(BENCH_DIR)
+    amp_after = disk_after / logical_size
+
+    print(f"\nAfter compaction:")
+    print(f"  SSTables:           {sst_count_after}")
+    print(f"  Disk usage:         {disk_after / 1024 / 1024:.2f} MB")
+    print(f"  Space amplification: {amp_after:.2f}x")
+    print(f"  Compaction time:    {compact_time:.2f}s")
+    print(f"  Space reclaimed:    {(disk_before - disk_after) / 1024 / 1024:.2f} MB ({(1 - disk_after / disk_before) * 100:.1f}%)")
+
+    clean()
+    print()
+
+
 if __name__ == "__main__":
     print_header()
     run_write_benchmarks()
     run_read_benchmarks()
+    run_compaction_benchmarks()
