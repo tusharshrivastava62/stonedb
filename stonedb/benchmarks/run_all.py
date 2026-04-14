@@ -68,7 +68,6 @@ def bench_sequential_writes(value_size):
 def setup_read_db(num_keys=NUM_KEYS, value_size=1024):
     """Create a DB with data flushed to SSTables for read benchmarks."""
     clean()
-    # small threshold to force lots of sstables
     db = DB(BENCH_DIR, memtable_threshold=32 * 1024)
     value = "x" * value_size
     for i in range(num_keys):
@@ -78,15 +77,27 @@ def setup_read_db(num_keys=NUM_KEYS, value_size=1024):
 
 
 def bench_read_latency(db, keys):
-    """Measure per-read latency for a list of keys. Returns list of latencies in ms."""
     latencies = []
     for key in keys:
         start = time.perf_counter()
         db.get(key)
-        elapsed = (time.perf_counter() - start) * 1000  # ms
+        elapsed = (time.perf_counter() - start) * 1000
         latencies.append(elapsed)
     latencies.sort()
     return latencies
+
+
+def count_disk_reads(db):
+    """Sum disk reads across all sstable readers."""
+    total = 0
+    for reader, _ in db._sstables:
+        total += reader._disk_reads
+    return total
+
+
+def reset_disk_reads(db):
+    for reader, _ in db._sstables:
+        reader._disk_reads = 0
 
 
 def run_write_benchmarks():
@@ -103,50 +114,52 @@ def run_write_benchmarks():
 
 
 def run_read_benchmarks():
-    print("READ LATENCY")
-    print("-" * 70)
-    print(f"{'Test':<30} {'p50':>8} {'p95':>8} {'p99':>8} {'bloom skips':>12}")
-    print("-" * 70)
+    print("READ LATENCY (on-disk index reads)")
+    print("-" * 75)
+    print(f"{'Test':<30} {'p50':>8} {'p95':>8} {'p99':>8} {'disk reads':>11} {'bloom skip':>11}")
+    print("-" * 75)
 
-    # setup
     db_path = setup_read_db()
 
-    # existing keys
     existing_keys = random.sample(
         [f"key_{i:08d}" for i in range(NUM_KEYS)], READ_SAMPLE
     )
-    # keys that don't exist
     missing_keys = [f"miss_{i:08d}" for i in range(READ_SAMPLE)]
 
-    # --- with bloom filters (normal) ---
+    # --- with bloom (normal) ---
     db = DB(db_path, memtable_threshold=32 * 1024)
     db._bloom_checks_skipped = 0
+    reset_disk_reads(db)
 
     lats = bench_read_latency(db, existing_keys)
     skips = db._bloom_checks_skipped
-    print(f"{'Existing keys (bloom ON)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {skips:>12}")
+    reads = count_disk_reads(db)
+    print(f"{'Existing keys (bloom ON)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {reads:>11,} {skips:>11,}")
 
     db._bloom_checks_skipped = 0
+    reset_disk_reads(db)
     lats = bench_read_latency(db, missing_keys)
     skips = db._bloom_checks_skipped
-    print(f"{'Missing keys (bloom ON)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {skips:>12}")
+    reads = count_disk_reads(db)
+    print(f"{'Missing keys (bloom ON)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {reads:>11,} {skips:>11,}")
 
     db.close()
 
-    # --- without bloom filters ---
+    # --- without bloom ---
     db2 = DB(db_path, memtable_threshold=32 * 1024)
-    # disable bloom by setting all blooms to None
     db2._sstables = [(reader, None) for reader, _ in db2._sstables]
-    db2._bloom_checks_skipped = 0
+    reset_disk_reads(db2)
 
     lats = bench_read_latency(db2, existing_keys)
-    print(f"{'Existing keys (bloom OFF)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {'—':>12}")
+    reads_no_bloom = count_disk_reads(db2)
+    print(f"{'Existing keys (bloom OFF)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {reads_no_bloom:>11,} {'—':>11}")
 
+    reset_disk_reads(db2)
     lats = bench_read_latency(db2, missing_keys)
-    print(f"{'Missing keys (bloom OFF)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {'—':>12}")
+    reads_no_bloom_miss = count_disk_reads(db2)
+    print(f"{'Missing keys (bloom OFF)':<30} {percentile(lats, 50):>7.3f}ms {percentile(lats, 95):>7.3f}ms {percentile(lats, 99):>7.3f}ms {reads_no_bloom_miss:>11,} {'—':>11}")
 
     db2.close()
-
     clean()
     print()
 
