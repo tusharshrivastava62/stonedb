@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="monospace" font-size="13">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+  </defs>
+
+  <!-- background -->
+  <rect width="900" height="520" fill="#fafafa" rx="8"/>
+
+  <!-- title -->
+  <text x="450" y="30" text-anchor="middle" font-size="18" font-weight="bold" fill="#1a1a2e">stonedb — LSM-Tree Architecture</text>
+
+  <!-- Client API -->
+  <rect x="30" y="60" width="120" height="50" rx="6" fill="#e8f4fd" stroke="#2196F3" stroke-width="1.5"/>
+  <text x="90" y="82" text-anchor="middle" font-size="12" font-weight="bold" fill="#1565C0">Client API</text>
+  <text x="90" y="98" text-anchor="middle" font-size="10" fill="#555">put / get / delete</text>
+
+  <!-- WRITE PATH label -->
+  <text x="30" y="145" font-size="11" font-weight="bold" fill="#e74c3c">WRITE PATH</text>
+
+  <!-- WAL -->
+  <rect x="30" y="160" width="140" height="60" rx="6" fill="#fff3e0" stroke="#FF9800" stroke-width="1.5"/>
+  <text x="100" y="182" text-anchor="middle" font-size="12" font-weight="bold" fill="#E65100">Write-Ahead Log</text>
+  <text x="100" y="198" text-anchor="middle" font-size="9" fill="#555">append + fsync</text>
+  <text x="100" y="210" text-anchor="middle" font-size="9" fill="#555">crash recovery</text>
+
+  <!-- arrow WAL to Memtable -->
+  <line x1="170" y1="190" x2="210" y2="190" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Memtable -->
+  <rect x="215" y="160" width="140" height="60" rx="6" fill="#e8f5e9" stroke="#4CAF50" stroke-width="1.5"/>
+  <text x="285" y="182" text-anchor="middle" font-size="12" font-weight="bold" fill="#2E7D32">Memtable</text>
+  <text x="285" y="198" text-anchor="middle" font-size="9" fill="#555">SortedDict (in memory)</text>
+  <text x="285" y="210" text-anchor="middle" font-size="9" fill="#555">flush at 4MB threshold</text>
+
+  <!-- arrow Memtable to SSTable -->
+  <line x1="355" y1="190" x2="395" y2="190" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="375" y="183" text-anchor="middle" font-size="9" fill="#999">flush</text>
+
+  <!-- SSTable -->
+  <rect x="400" y="155" width="160" height="70" rx="6" fill="#fce4ec" stroke="#E91E63" stroke-width="1.5"/>
+  <text x="480" y="177" text-anchor="middle" font-size="12" font-weight="bold" fill="#880E4F">SSTable (on disk)</text>
+  <text x="480" y="193" text-anchor="middle" font-size="9" fill="#555">sorted, immutable</text>
+  <text x="480" y="205" text-anchor="middle" font-size="9" fill="#555">data + index + footer</text>
+  <text x="480" y="217" text-anchor="middle" font-size="9" fill="#555">+ bloom filter (.bloom)</text>
+
+  <!-- arrow Client to WAL -->
+  <line x1="90" y1="110" x2="90" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="95" y="137" font-size="9" fill="#e74c3c">write</text>
+
+  <!-- READ PATH label -->
+  <text x="30" y="275" font-size="11" font-weight="bold" fill="#2196F3">READ PATH</text>
+
+  <!-- Read: Memtable check -->
+  <rect x="30" y="290" width="140" height="50" rx="6" fill="#e8f5e9" stroke="#4CAF50" stroke-width="1.5"/>
+  <text x="100" y="312" text-anchor="middle" font-size="11" font-weight="bold" fill="#2E7D32">1. Check Memtable</text>
+  <text x="100" y="328" text-anchor="middle" font-size="9" fill="#555">fastest — in memory</text>
+
+  <!-- arrow -->
+  <line x1="170" y1="315" x2="210" y2="315" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="190" y="308" text-anchor="middle" font-size="8" fill="#999">miss</text>
+
+  <!-- Read: Bloom check -->
+  <rect x="215" y="290" width="140" height="50" rx="6" fill="#f3e5f5" stroke="#9C27B0" stroke-width="1.5"/>
+  <text x="285" y="312" text-anchor="middle" font-size="11" font-weight="bold" fill="#6A1B9A">2. Bloom Filter</text>
+  <text x="285" y="328" text-anchor="middle" font-size="9" fill="#555">"definitely not here" → skip</text>
+
+  <!-- arrow -->
+  <line x1="355" y1="315" x2="395" y2="315" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="375" y="308" text-anchor="middle" font-size="8" fill="#999">maybe</text>
+
+  <!-- Read: SSTable scan -->
+  <rect x="400" y="290" width="160" height="50" rx="6" fill="#fce4ec" stroke="#E91E63" stroke-width="1.5"/>
+  <text x="480" y="312" text-anchor="middle" font-size="11" font-weight="bold" fill="#880E4F">3. SSTable Lookup</text>
+  <text x="480" y="328" text-anchor="middle" font-size="9" fill="#555">read index → seek → read value</text>
+
+  <!-- Client to read path -->
+  <line x1="90" y1="110" x2="45" y2="285" stroke="#2196F3" stroke-width="1" stroke-dasharray="5,3"/>
+  <text x="40" y="200" font-size="9" fill="#2196F3" transform="rotate(-70, 40, 200)">read</text>
+
+  <!-- COMPACTION section -->
+  <text x="30" y="390" font-size="11" font-weight="bold" fill="#FF9800">BACKGROUND: COMPACTION</text>
+
+  <!-- Old SSTables -->
+  <rect x="30" y="405" width="90" height="35" rx="4" fill="#ffebee" stroke="#E91E63" stroke-width="1"/>
+  <text x="75" y="427" text-anchor="middle" font-size="9" fill="#555">SST 0</text>
+  <rect x="130" y="405" width="90" height="35" rx="4" fill="#ffebee" stroke="#E91E63" stroke-width="1"/>
+  <text x="175" y="427" text-anchor="middle" font-size="9" fill="#555">SST 1</text>
+  <rect x="230" y="405" width="90" height="35" rx="4" fill="#ffebee" stroke="#E91E63" stroke-width="1"/>
+  <text x="275" y="427" text-anchor="middle" font-size="9" fill="#555">SST 2</text>
+
+  <!-- arrow to merged -->
+  <line x1="330" y1="422" x2="390" y2="422" stroke="#FF9800" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="360" y="415" text-anchor="middle" font-size="9" fill="#FF9800">merge</text>
+
+  <!-- Merged SSTable -->
+  <rect x="395" y="400" width="130" height="45" rx="4" fill="#fff3e0" stroke="#FF9800" stroke-width="1.5"/>
+  <text x="460" y="420" text-anchor="middle" font-size="10" font-weight="bold" fill="#E65100">Merged SST</text>
+  <text x="460" y="435" text-anchor="middle" font-size="9" fill="#555">dedup + drop tombstones</text>
+
+  <!-- Key stats box -->
+  <rect x="620" y="60" width="250" height="200" rx="6" fill="#f5f5f5" stroke="#ddd" stroke-width="1"/>
+  <text x="745" y="82" text-anchor="middle" font-size="12" font-weight="bold" fill="#333">Benchmark Highlights</text>
+  <line x1="630" y1="90" x2="860" y2="90" stroke="#ddd" stroke-width="1"/>
+  <text x="635" y="110" font-size="10" fill="#555">Writes:    38K/sec (100B, fsync)</text>
+  <text x="635" y="130" font-size="10" fill="#555">Read p99:  6.2ms (bloom ON)</text>
+  <text x="635" y="150" font-size="10" fill="#555">Read p99:  61.6ms (bloom OFF)</text>
+  <text x="635" y="170" font-size="10" fill="#e74c3c" font-weight="bold">Bloom:     98.5% disk reads saved</text>
+  <text x="635" y="190" font-size="10" fill="#555">Compaction: 1191 → 1 SSTable</text>
+  <text x="635" y="210" font-size="10" fill="#555">Space:     1.58x → 1.06x</text>
+  <text x="635" y="230" font-size="10" fill="#555">Recovery:  100% entries</text>
+  <text x="635" y="250" font-size="10" fill="#555">Tests:     11 passing</text>
+
+  <!-- File format box -->
+  <rect x="620" y="290" width="250" height="150" rx="6" fill="#f5f5f5" stroke="#ddd" stroke-width="1"/>
+  <text x="745" y="312" text-anchor="middle" font-size="12" font-weight="bold" fill="#333">SSTable Format</text>
+  <line x1="630" y1="320" x2="860" y2="320" stroke="#ddd" stroke-width="1"/>
+  <text x="635" y="340" font-size="10" fill="#555" font-family="monospace">[key_len:4][val_len:4][key][val]</text>
+  <text x="635" y="358" font-size="10" fill="#555" font-family="monospace">  ... (sorted entries) ...</text>
+  <text x="635" y="376" font-size="10" fill="#555" font-family="monospace">[num_keys:4]</text>
+  <text x="635" y="394" font-size="10" fill="#555" font-family="monospace">[key_len:4][key][offset:8] ...</text>
+  <text x="635" y="412" font-size="10" fill="#555" font-family="monospace">[index_offset:8][0xdbdbdbdb]</text>
+  <text x="640" y="432" font-size="9" fill="#999">↑ data     ↑ index       ↑ footer</text>
+
+  <!-- bottom note -->
+  <text x="450" y="500" text-anchor="middle" font-size="10" fill="#999">stonedb — github.com/tusharshrivastava62/stonedb</text>
+</svg>
