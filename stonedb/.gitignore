@@ -7,4 +7,6 @@ build/
 *.db
 *.wal
 *.sst
+*.bloom
 data/
+.pytest_cache/
