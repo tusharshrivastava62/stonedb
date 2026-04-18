@@ -67,6 +67,9 @@ class DB:
                 return None
             return val
 
+        # TODO: add a block cache here — recently read SSTable blocks
+        # could be kept in an LRU cache to avoid repeated disk reads
+        # for hot keys
         for reader, bloom in self._sstables:
             if bloom is not None and not bloom.might_contain(key):
                 self._bloom_checks_skipped += 1
@@ -82,6 +85,10 @@ class DB:
 
     def delete(self, key):
         self.put(key, TOMBSTONE)
+
+    # TODO: add range_scan(start_key, end_key) — would need a merge
+    # iterator over memtable + all sstables, yielding keys in order.
+    # Not trivial because you have to handle tombstones during iteration.
 
     def run_compaction(self, num_tables=None):
         """Merge oldest SSTables into one. Defaults to compacting all."""

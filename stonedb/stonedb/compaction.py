@@ -2,6 +2,11 @@ import os
 from stonedb.sstable import SSTableWriter, SSTableReader
 from stonedb.bloom import BloomFilter
 
+# TODO: add size-tiered compaction as alternative strategy.
+# current approach always merges the oldest N tables, but
+# size-tiered would group tables by similar size and merge
+# those first, which can reduce write amplification.
+
 
 def compact(sst_paths, output_path, drop_tombstones=False):
     """Merge multiple SSTables into one. Newer entries win for duplicate keys.

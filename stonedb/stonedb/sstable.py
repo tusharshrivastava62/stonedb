@@ -59,10 +59,12 @@ class SSTableReader:
         self._disk_reads += 1
         target = key.encode()
 
+        # TODO: binary search on index block instead of linear scan.
+        # index is sorted so we could cut lookup from O(n) to O(log n).
+        # not worth it at current scale but would matter with large SSTables.
         with open(self.path, "rb") as f:
             index_offset = self._read_footer(f)
 
-            # scan index for key
             f.seek(index_offset)
             count = struct.unpack(">I", f.read(4))[0]
 
@@ -78,7 +80,6 @@ class SSTableReader:
             if data_offset is None:
                 return None
 
-            # read value at offset
             f.seek(data_offset)
             header = f.read(ENTRY_HEADER_SIZE)
             klen, vlen = struct.unpack(ENTRY_HEADER, header)
